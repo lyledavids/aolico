@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lico - AO Social</title>
+    <script src="https://unpkg.com/arweave/bundles/web.bundle.js"></script>
+    <script src="https://unpkg.com/arconnect"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div id="app" class="container mx-auto p-4">
+        <h1 class="text-3xl font-bold mb-4">Lico - AO Social</h1>
+       
+        <button id="connectWallet" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 mb-4">Connect ArConnect</button>
+       
+        <div id="content" class="hidden">
+            <div class="mb-8">
+                <h2 class="text-2xl font-semibold mb-2">Create a New Post</h2>
+                <form id="postForm" class="space-y-2">
+                    <input id="postTitle" type="text" placeholder="Title" required class="w-full p-2 border rounded">
+                    <textarea id="postContent" placeholder="Content" required class="w-full p-2 border rounded"></textarea>
+                    <button type="submit" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Create Post</button>
+                </form>
+            </div>
+           
+            <div id="posts" class="space-y-4"></div>
+        </div>
+    </div>
+
+    <script>
+        const processId = 'xV9_lffLrE1FYmcgIQFsFvXuN9tLxKYUJFDg5s1oj2M'; // Your AO process ID
+        let arweave;
+        let walletAddress;
+
+        async function connectWallet() {
+            try {
+                await window.arweaveWallet.connect(['ACCESS_ADDRESS', 'SIGN_TRANSACTION']);
+                walletAddress = await window.arweaveWallet.getActiveAddress();
+                document.getElementById('connectWallet').textContent = 'Wallet Connected';
+                document.getElementById('content').classList.remove('hidden');
+                await refreshPosts();
+            } catch (error) {
+                console.error('Error connecting wallet:', error);
+                alert('Failed to connect wallet. Make sure ArConnect is installed and try again.');
+            }
+        }
+
+        async function sendMessage(action, data) {
+            try {
+                const transaction = await arweave.createTransaction({
+                    data: JSON.stringify(data)
+                });
+                transaction.addTag('App-Name', 'AO-Social');
+                transaction.addTag('Action', action);
+                transaction.addTag('Process', processId);
+
+                await window.arweaveWallet.sign(transaction);
+                await arweave.transactions.post(transaction);
+
+                return transaction.id;
+            } catch (error) {
+                console.error('Error sending message:', error);
+                throw error;
+            }
+        }
+
+        async function getPosts() {
+            try {
+                const query = {
+                    query: `{
+                        transactions(
+                            tags: [
+                                { name: "App-Name", values: ["AO-Social"] },
+                                { name: "Action", values: ["CreatePost"] },
+                                { name: "Process", values: ["${processId}"] }
+                            ]
+                        ) {
+                            edges {
+                                node {
+                                    id
+                                    owner { address }
+                                    data { size }
+                                    block { timestamp }
+                                    tags { name value }
+                                }
+                            }
+                        }
+                    }`
+                };
+
+                const response = await arweave.api.post('/graphql', query);
+                const posts = response.data.data.transactions.edges.map(edge => {
+                    const node = edge.node;
+                    return {
+                        id: node.id,
+                        author: node.owner.address,
+                        timestamp: node.block ? node.block.timestamp : Date.now() / 1000,
+                        title: node.tags.find(tag => tag.name === 'Title').value,
+                        content: node.tags.find(tag => tag.name === 'Content').value,
+                        upvotes: 0,
+                        downvotes: 0
+                    };
+                });
+
+                return posts;
+            } catch (error) {
+                console.error('Error fetching posts:', error);
+                return [];
+            }
+        }
+
+        async function createPost(title, content) {
+            try {
+                await sendMessage('CreatePost', { title, content });
+                return true;
+            } catch (error) {
+                console.error('Error creating post:', error);
+                return false;
+            }
+        }
+
+        async function vote(id, type, direction) {
+            try {
+                await sendMessage('VotePost', { postId: id, direction });
+                return true;
+            } catch (error) {
+                console.error('Error voting:', error);
+                return false;
+            }
+        }
+
+        function renderPosts(posts) {
+            const postsContainer = document.getElementById('posts');
+            postsContainer.innerHTML = '';
+            posts.forEach(post => {
+                const postElement = document.createElement('div');
+                postElement.className = 'bg-white p-4 rounded shadow';
+                postElement.innerHTML = `
+                    <h3 class="text-xl font-semibold">${post.title}</h3>
+                    <p class="mt-2">${post.content}</p>
+                    <p class="text-sm text-gray-500 mt-2">Posted by ${post.author.substr(0, 5)}...${post.author.substr(-5)} on ${new Date(post.timestamp * 1000).toLocaleString()}</p>
+                    <div class="mt-2">
+                        <button onclick="vote('${post.id}', 'post', 'up')" class="bg-green-500 text-white px-2 py-1 rounded mr-2">👍 ${post.upvotes}</button>
+                        <button onclick="vote('${post.id}', 'post', 'down')" class="bg-red-500 text-white px-2 py-1 rounded">👎 ${post.downvotes}</button>
+                    </div>
+                `;
+                postsContainer.appendChild(postElement);
+            });
+        }
+
+        async function refreshPosts() {
+            const posts = await getPosts();
+            renderPosts(posts);
+        }
+
+        document.getElementById('connectWallet').addEventListener('click', connectWallet);
+
+        document.getElementById('postForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const title = document.getElementById('postTitle').value;
+            const content = document.getElementById('postContent').value;
+            const success = await createPost(title, content);
+            if (success) {
+                document.getElementById('postTitle').value = '';
+                document.getElementById('postContent').value = '';
+                await refreshPosts();
+            }
+        });
+
+        // Initialize Arweave
+        arweave = Arweave.init({
+            host: 'arweave.net',
+            port: 443,
+            protocol: 'https'
+        });
+
+        // Check if ArConnect is installed
+        if (window.arweaveWallet) {
+            document.getElementById('connectWallet').classList.remove('hidden');
+        } else {
+            alert('ArConnect is not installed. Please install it to use this application.');
+        }
+    </script>
+</body>
+</html>
